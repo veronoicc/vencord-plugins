@@ -1,13 +1,15 @@
-name: Trigger arch repo build
+name: Trigger arch-repo build
+
 on:
   push:
     branches: [main]
+
 jobs:
   trigger:
     runs-on: ubuntu-latest
     steps:
-      - run: |
-          gh api repos/veronoicc/vero-on-arch/dispatches \
-            -f event_type=equicord_plugins_update
+      - name: Trigger vero-on-arch
+        run: |
+          gh api repos/veronoicc/vero-on-arch/dispatches -f event_type=upstream_update
         env:
-          GH_TOKEN: ${{ secrets.REPO_DISPATCH_TOKEN }}
+          GH_TOKEN: ${{ secrets.DISPATCH_TOKEN }}
