@@ -1,0 +1,3 @@
+[submodule "mcp"]
+	path = DiscordMCP
+	url = https://github.com/bluscream-vencord-plugins/mcp.git
