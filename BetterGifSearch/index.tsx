@@ -17,28 +17,18 @@
 */
 
 import { definePluginSettings } from "@api/Settings";
+import { Divider } from "@components/Divider";
 import ErrorBoundary from "@components/ErrorBoundary";
 import { Flex } from "@components/Flex";
+import { Heading } from "@components/Heading";
+import { Paragraph } from "@components/Paragraph";
 import { Devs } from "@utils/constants";
 import { sleep } from "@utils/misc";
 import definePlugin, { OptionType } from "@utils/types";
 import { findByPropsLazy } from "@webpack";
-import { Button, Forms, React, Slider, Text, TextInput, useCallback, useEffect, useRef, UserStore, useState } from "@webpack/common";
+import { Button, React, Slider, Text, TextInput, useCallback, useEffect, useRef, UserStore, useState } from "@webpack/common";
 
-const favoriteGifsStore = findByPropsLazy("bW", "getCurrentValue");
-
-interface SearchBarComponentProps {
-    ref?: React.RefObject<any>;
-    autoFocus: boolean;
-    size: string;
-    onChange: (query: string) => void;
-    onClear: () => void;
-    query: string;
-    placeholder: string;
-    className?: string;
-}
-
-type TSearchBarComponent = React.FC<SearchBarComponentProps>;
+const UserSettingsProtoStore = findByPropsLazy("frecencyWithoutFetchingLatest");
 
 interface Gif {
     format: number;
@@ -55,7 +45,7 @@ interface Instance {
         resultType?: string;
     };
     props: {
-        favCopy: Gif[];
+        favCopy?: Gif[];
         favorites: Gif[];
     };
     forceUpdate: () => void;
@@ -66,17 +56,23 @@ const failedLinks = new Set<string>();
 
 function getSavedFavorites(): Gif[] {
     try {
-        const store = favoriteGifsStore?.bW;
-        if (store && typeof store.getCurrentValue === "function") {
-            const gifs = store.getCurrentValue()?.favoriteGifs?.gifs ?? {};
-            return Object.values(gifs) as Gif[];
+        const raw = UserSettingsProtoStore?.frecencyWithoutFetchingLatest?.favoriteGifs?.gifs;
+        if (raw) {
+            return Object.entries(raw).map(([url, gif]: [string, Partial<Gif>]) => ({
+                format: gif.format ?? 1,
+                src: gif.src ?? "",
+                width: gif.width ?? 0,
+                height: gif.height ?? 0,
+                order: gif.order ?? 0,
+                url: gif.url ?? url
+            }));
         }
     } catch { }
     return [];
 }
 
 function getFavoritesList(): Gif[] {
-    if (activeInstance && activeInstance.props.favCopy) {
+    if (activeInstance?.props?.favCopy) {
         return activeInstance.props.favCopy;
     }
     return getSavedFavorites();
@@ -92,6 +88,7 @@ function getModelWeights(): Record<string, number> {
 }
 
 function stripUrlParams(urlStr: string): string {
+    if (!urlStr) return "";
     try {
         const url = new URL(urlStr);
         return `${url.origin}${url.pathname}`;
@@ -100,10 +97,29 @@ function stripUrlParams(urlStr: string): string {
     }
 }
 
+function generateUuid(): string {
+    if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+        return crypto.randomUUID();
+    }
+    return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, c => {
+        const r = (Math.random() * 16) | 0;
+        const v = c === "x" ? r : (r & 0x3) | 0x8;
+        return v.toString(16);
+    });
+}
+
+function ensureUuid(): string {
+    let uuid = settings.store.uuid;
+    if (!uuid) {
+        uuid = generateUuid();
+        settings.store.uuid = uuid;
+    }
+    return uuid;
+}
+
 // Fetch currently indexed links from the server
 async function fetchIndexedLinks(): Promise<Set<string>> {
-    const uuid = settings.store.uuid;
-    if (!uuid) return new Set();
+    const uuid = ensureUuid();
 
     try {
         const response = await fetch(`${settings.store.api_url}/${uuid}/links`);
@@ -112,9 +128,7 @@ async function fetchIndexedLinks(): Promise<Set<string>> {
         if (res.type === "success" && res.data) {
             return new Set(Object.values(res.data).map(stripUrlParams));
         }
-    } catch (e) {
-        // Safe logging or ignore
-    }
+    } catch { }
     return new Set();
 }
 
@@ -129,9 +143,8 @@ function getValidGifs(favorites: Gif[]): Gif[] {
             const url = new URL(gif.src);
             const domain = url.host;
 
-            // Check domain validity
             const isDiscordDomain = domain.endsWith(".discordapp.net") || domain.endsWith(".discordapp.com");
-            const isTenorDomain = domain === "media.tenor.co" || domain === "c.tenor.com";
+            const isTenorDomain = domain.endsWith(".tenor.com") || domain.endsWith(".tenor.co") || domain === "tenor.com";
             if (!domain || domain.length > 256 || (!isDiscordDomain && !isTenorDomain)) {
                 continue;
             }
@@ -147,8 +160,7 @@ function getValidGifs(favorites: Gif[]): Gif[] {
 
 // Function to send index request
 async function indexFavorites(favorites: Gif[]) {
-    const uuid = settings.store.uuid;
-    if (!uuid) return;
+    const uuid = ensureUuid();
 
     if (pendingIndexRequest) {
         return;
@@ -208,16 +220,14 @@ async function indexFavorites(favorites: Gif[]) {
                 } else {
                     failedLinks.add(gif.src);
                 }
-            } catch (e) {
+            } catch {
                 failedLinks.add(gif.src);
             }
         }
 
         lastIndexedFavorites = validGifs.map(g => stripUrlParams(g.src));
         lastUserId = id;
-    } catch (error) {
-        // ignore
-    } finally {
+    } catch { } finally {
         pendingIndexRequest = false;
     }
 }
@@ -230,7 +240,6 @@ function shouldIndex(favorites: Gif[]): boolean {
 
     const currentValidGifs = getValidGifs(favorites);
 
-    // Check if valid favorites changed
     if (currentValidGifs.length !== lastIndexedFavorites.length) {
         return true;
     }
@@ -249,7 +258,6 @@ function ModelWeightsComponent() {
     const [models, setModels] = useState<Record<string, number>>(() => getModelWeights());
 
     useEffect(() => {
-        // if we don't have models in settings, try fetching from API
         if (Object.keys(models).length === 0) {
             (async () => {
                 try {
@@ -264,10 +272,8 @@ function ModelWeightsComponent() {
                     }
                     const combined = { ...remote, ...getModelWeights() };
                     setModels(combined);
-                    (settings.store as any).modelWeights = combined;
-                } catch (e) {
-                    // ignore
-                }
+                    settings.store.modelWeights = combined;
+                } catch { }
             })();
         }
     }, [models]);
@@ -275,21 +281,21 @@ function ModelWeightsComponent() {
     function setModelWeight(name: string, weight: number) {
         const next = { ...models, [name]: weight };
         setModels(next);
-        (settings.store as any).modelWeights = next;
+        settings.store.modelWeights = next;
     }
 
     return (
-        <Forms.FormSection>
-            <Forms.FormTitle tag="h3">Models</Forms.FormTitle>
-            <Forms.FormText>
+        <section>
+            <Heading tag="h3">CLIP Models</Heading>
+            <Paragraph>
                 Adjust how model outputs are weighted when searching favorite GIFs.
-            </Forms.FormText>
+            </Paragraph>
 
             <div style={{ marginTop: 8 }}>
                 {Object.entries(models).map(([name, weight]) => (
                     <div key={name} style={{ marginBottom: 12 }}>
-                        <Forms.FormTitle tag="h4">{name}</Forms.FormTitle>
-                        <Flex flexDirection={Flex.Direction.HORIZONTAL} style={{ alignItems: "center", gap: "0.75rem", marginTop: 6 }}>
+                        <Heading tag="h4">{name}</Heading>
+                        <Flex flexDirection="row" style={{ alignItems: "center", gap: "0.75rem", marginTop: 6 }}>
                             <div style={{ flex: 1 }}>
                                 <Slider
                                     markers={[0, 1]}
@@ -301,7 +307,7 @@ function ModelWeightsComponent() {
                                     stickToMarkers={false}
                                 />
                             </div>
-                            <Text variant={"text-xs/normal"} style={{ width: 54, textAlign: "right", color: "var(--text-muted)" }}>
+                            <Text variant="text-xs/normal" style={{ width: 54, textAlign: "right", color: "var(--text-muted)" }}>
                                 {(weight * 100).toFixed(0)}%
                             </Text>
                         </Flex>
@@ -309,8 +315,8 @@ function ModelWeightsComponent() {
                 ))}
             </div>
 
-            <Forms.FormDivider style={{ marginTop: 6 }} />
-        </Forms.FormSection>
+            <Divider style={{ marginTop: 12 }} />
+        </section>
     );
 }
 
@@ -332,26 +338,20 @@ function IndexingStatsComponent() {
                 setTotalValid(valid.length);
                 setFailedCount(failedLinks.size);
 
-                const uuid = settings.store.uuid;
-                if (!uuid) {
-                    setLoading(false);
-                    return;
-                }
+                const uuid = ensureUuid();
                 const response = await fetch(`${settings.store.api_url}/${uuid}/links`);
                 if (!response.ok) {
-                    setLoading(false);
+                    if (isMounted) setLoading(false);
                     return;
                 }
-                const res = await response.json() as { type: string; data: Record<string, string>; };
+                const res = (await response.json()) as { type: string; data: Record<string, string>; };
                 if (!isMounted) return;
                 if (res.type === "success" && res.data) {
                     const serverSet = new Set(Object.values(res.data).map(stripUrlParams));
                     const matchCount = valid.filter(gif => serverSet.has(stripUrlParams(gif.src))).length;
                     setIndexedCount(matchCount);
                 }
-            } catch (e) {
-                // ignore
-            } finally {
+            } catch { } finally {
                 if (isMounted) setLoading(false);
             }
         })();
@@ -363,11 +363,11 @@ function IndexingStatsComponent() {
     const pendingCount = indexedCount !== null ? Math.max(0, totalValid - indexedCount) : 0;
 
     return (
-        <Forms.FormSection>
-            <Forms.FormTitle tag="h3">Indexing Database Statistics</Forms.FormTitle>
-            <Forms.FormText>
+        <section>
+            <Heading tag="h3">Indexing Database Statistics</Heading>
+            <Paragraph>
                 Status counts of your local favorite GIFs and the indexing backend.
-            </Forms.FormText>
+            </Paragraph>
 
             <div style={{ marginTop: 12 }}>
                 {loading ? (
@@ -375,7 +375,7 @@ function IndexingStatsComponent() {
                         Loading stats...
                     </Text>
                 ) : (
-                    <Flex flexDirection={Flex.Direction.HORIZONTAL} style={{ gap: "1rem", flexWrap: "wrap", marginTop: 8 }}>
+                    <Flex flexDirection="row" style={{ gap: "1rem", flexWrap: "wrap", marginTop: 8 }}>
                         <div style={{
                             display: "flex",
                             flexDirection: "column",
@@ -427,16 +427,9 @@ function IndexingStatsComponent() {
                     </Flex>
                 )}
             </div>
-            <Forms.FormDivider style={{ marginTop: 12 }} />
-        </Forms.FormSection>
+            <Divider style={{ marginTop: 12 }} />
+        </section>
     );
-}
-
-function generateUuid() {
-    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
-        var r = Math.random() * 16 | 0, v = c === 'x' ? r : (r & 0x3 | 0x8);
-        return v.toString(16);
-    });
 }
 
 function UuidManagerComponent() {
@@ -458,14 +451,14 @@ function UuidManagerComponent() {
     }, [uuid]);
 
     return (
-        <Forms.FormSection>
-            <Forms.FormTitle tag="h3">Database Sync UUID</Forms.FormTitle>
-            <Forms.FormText>
+        <section>
+            <Heading tag="h3">Database Sync UUID</Heading>
+            <Paragraph>
                 This UUID serves as your unique database key that identifies your indexed GIF embeddings on the backend. Share this UUID across your devices to keep them in sync.
-            </Forms.FormText>
+            </Paragraph>
 
             <div style={{ marginTop: 12 }}>
-                <Flex flexDirection={Flex.Direction.HORIZONTAL} style={{ gap: "0.5rem", alignItems: "stretch" }}>
+                <Flex flexDirection="row" style={{ gap: "0.5rem", alignItems: "stretch" }}>
                     <div style={{ flex: 1 }}>
                         <TextInput
                             value={uuid}
@@ -492,8 +485,8 @@ function UuidManagerComponent() {
                 </Flex>
             </div>
 
-            <Forms.FormDivider style={{ marginTop: 12 }} />
-        </Forms.FormSection>
+            <Divider style={{ marginTop: 12 }} />
+        </section>
     );
 }
 
@@ -525,10 +518,12 @@ export const settings = definePluginSettings({
 
 export default definePlugin({
     name: "BetterGifSearch",
-    authors: [Devs.Aria, { name: "Woodie", id: 851073836152651777n}, { name: "V", id: 315547631373778945n }],
+    authors: [Devs.Aria, { name: "Woodie", id: 851073836152651777n }, { name: "V", id: 315547631373778945n }],
     description: "Adds an AI-powered search bar to favorite gifs.",
 
     start() {
+        ensureUuid();
+
         // Try to fetch available models/providers from the API and initialize weights if missing
         (async () => {
             try {
@@ -546,27 +541,21 @@ export default definePlugin({
                     }
                 }
                 if (changed) {
-                    (settings.store as any).modelWeights = current;
+                    settings.store.modelWeights = current;
                 }
-            } catch (e) {
-                // ignore
-            }
+            } catch { }
         })();
     },
 
     patches: [
         {
-            find: "renderHeaderContent()",
+            find: "renderHeaderContent(){",
             replacement: [
                 {
-                    // https://regex101.com/r/07gpzP/1
-                    // ($1 renderHeaderContent=function { ... switch (x) ... case FAVORITES:return) ($2) ($3 case default: ... return r.jsx(($<searchComp>), {...props}))
-                    match: /(renderHeaderContent\(\).{1,150}FAVORITES:return)(.{1,150});(case.{1,200}default:.{0,50}?return\(0,\i\.jsx\)\((?<searchComp>\i\.\i),)/,
-                    replace: "$1 this?.state?.resultType === 'Favorites' ? $self.renderSearchBar(this, $<searchComp>) : $2;$3"
+                    match: /(case\s+(?:\i\.)+FAVORITES:\s*return)(?:[\s\S]*?)(?=case)/,
+                    replace: "$1 $self.renderSearchBar(this);"
                 },
                 {
-                    // to persist filtered favorites when component re-renders.
-                    // when resizing the window the component rerenders and we loose the filtered favorites and have to type in the search bar to get them again
                     match: /(,suggestions:\i,favorites:)(\i),/,
                     replace: "$1$self.getFav($2),favCopy:$2,"
                 }
@@ -577,23 +566,22 @@ export default definePlugin({
     settings,
 
     instance: null as Instance | null,
-    renderSearchBar(instance: Instance, SearchBarComponent: TSearchBarComponent) {
+    renderSearchBar(instance: Instance) {
         activeInstance = instance;
         this.instance = instance;
         return (
             <ErrorBoundary noop>
-                <SearchBar instance={instance} SearchBarComponent={SearchBarComponent} />
+                <SearchBar instance={instance} />
             </ErrorBoundary>
         );
     },
 
     getFav(favorites: Gif[]) {
         if (!this.instance || this.instance.dead) return favorites;
-        const { favorites: filteredFavorites } = this.instance.props;
+        const filteredFavorites = this.instance.props?.favorites;
 
-        const favoritesToReturn = filteredFavorites != null && filteredFavorites?.length !== favorites.length ? filteredFavorites : favorites;
+        const favoritesToReturn = filteredFavorites != null && filteredFavorites.length !== favorites.length ? filteredFavorites : favorites;
 
-        // Check if we need to index favorites (only check the original favorites, not filtered ones)
         if (shouldIndex(favorites)) {
             indexFavorites(favorites);
         }
@@ -602,63 +590,73 @@ export default definePlugin({
     }
 });
 
-function SearchBar({ instance, SearchBarComponent }: { instance: Instance; SearchBarComponent: TSearchBarComponent; }) {
+function SearchBar({ instance }: { instance: Instance; }) {
     const [query, setQuery] = useState("");
     const [debouncedQuery, setDebouncedQuery] = useState("");
-    const ref = useRef<{ containerRef?: React.RefObject<HTMLDivElement>; } | null>(null);
+    const ref = useRef<HTMLInputElement>(null);
     const abortControllerRef = useRef<AbortController | null>(null);
     const debounceTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
     // Check for ranking weight changes and trigger indexing if needed
     useEffect(() => {
-        if (instance.props.favCopy && shouldIndex(instance.props.favCopy)) {
-            indexFavorites(instance.props.favCopy);
+        const favs = instance.props.favCopy ?? instance.props.favorites;
+        if (favs && shouldIndex(favs)) {
+            indexFavorites(favs);
         }
     });
+
+    const clearSearch = useCallback(() => {
+        if (debounceTimeoutRef.current) {
+            clearTimeout(debounceTimeoutRef.current);
+        }
+        if (abortControllerRef.current) {
+            abortControllerRef.current.abort();
+        }
+        setQuery("");
+        setDebouncedQuery("");
+        if (instance.props.favCopy != null) {
+            instance.props.favorites = instance.props.favCopy;
+            instance.forceUpdate();
+        }
+    }, [instance]);
 
     const onChange = useCallback((searchQuery: string) => {
         setQuery(searchQuery);
 
-        // Clear existing debounce timeout
         if (debounceTimeoutRef.current) {
             clearTimeout(debounceTimeoutRef.current);
         }
-
-        // Cancel any ongoing request
         if (abortControllerRef.current) {
             abortControllerRef.current.abort();
         }
 
-        // Handle empty query immediately
         if (searchQuery === "") {
             setDebouncedQuery("");
-            const { props } = instance;
-            props.favorites = props.favCopy;
-            instance.forceUpdate();
+            if (instance.props.favCopy != null) {
+                instance.props.favorites = instance.props.favCopy;
+                instance.forceUpdate();
+            }
             return;
         }
 
-        // Debounce the search - wait 300ms after user stops typing
         debounceTimeoutRef.current = setTimeout(() => {
             setDebouncedQuery(searchQuery);
         }, 300);
     }, [instance]);
 
-    // Effect to handle the actual search when debouncedQuery changes
     useEffect(() => {
         if (debouncedQuery === "") return;
 
         const performSearch = async () => {
-            const uuid = settings.store.uuid;
-            if (!uuid) return;
-
+            const uuid = ensureUuid();
             const { props } = instance;
+            const favCopy = props.favCopy ?? props.favorites;
+            if (!favCopy) return;
 
-            // Create new AbortController for this request
             abortControllerRef.current = new AbortController();
 
-            // scroll back to top
-            ref.current?.containerRef?.current
+            // Scroll back to top
+            ref.current
                 ?.closest("#gif-picker-tab-panel")
                 ?.querySelector("[class|=\"content\"]")
                 ?.firstElementChild?.scrollTo(0, 0);
@@ -672,7 +670,7 @@ function SearchBar({ instance, SearchBarComponent }: { instance: Instance; Searc
                     throw new Error(`HTTP error! status: ${response.status}`);
                 }
 
-                const data = await response.json() as {
+                const data = (await response.json()) as {
                     type: string;
                     data: {
                         providers: Record<string, { link: string; score: number; }[]>;
@@ -728,19 +726,18 @@ function SearchBar({ instance, SearchBarComponent }: { instance: Instance; Searc
 
                     if (totalWeight === 0) return null;
 
-                    const gif = props.favCopy.find(g => stripUrlParams(g.src) === stripUrlParams(url) || stripUrlParams(g.url) === stripUrlParams(url));
+                    const gif = favCopy.find(g => stripUrlParams(g.src) === stripUrlParams(url) || stripUrlParams(g.url) === stripUrlParams(url));
                     return gif ? { combinedScore: totalScore / totalWeight, gif } : null;
                 }).filter(Boolean) as { combinedScore: number; gif: Gif; }[];
 
                 aggregated.sort((a, b) => b.combinedScore - a.combinedScore);
                 props.favorites = aggregated.map(e => e.gif);
                 instance.forceUpdate();
-            } catch (err: any) {
-                if (err.name === "AbortError") {
-                    console.log("Fetch aborted");
+            } catch (err: unknown) {
+                if (err instanceof Error && err.name === "AbortError") {
                     return;
                 }
-                console.error("Error fetching search results:", err);
+                console.error("[BetterGifSearch] Error fetching search results:", err);
                 instance.forceUpdate();
             }
         };
@@ -750,11 +747,9 @@ function SearchBar({ instance, SearchBarComponent }: { instance: Instance; Searc
 
     useEffect(() => {
         return () => {
-            // Clear debounce timeout on unmount
             if (debounceTimeoutRef.current) {
                 clearTimeout(debounceTimeoutRef.current);
             }
-            // Cancel any ongoing request when component unmounts
             if (abortControllerRef.current) {
                 abortControllerRef.current.abort();
             }
@@ -763,30 +758,19 @@ function SearchBar({ instance, SearchBarComponent }: { instance: Instance; Searc
     }, []);
 
     return (
-        <SearchBarComponent
-            ref={ref}
-            autoFocus={true}
-            size="md"
-            className=""
+        <TextInput
+            autoFocus
+            value={query}
             onChange={onChange}
-            onClear={() => {
-                // Clear debounce timeout when clearing
-                if (debounceTimeoutRef.current) {
-                    clearTimeout(debounceTimeoutRef.current);
-                }
-                // Cancel any ongoing request when clearing
-                if (abortControllerRef.current) {
-                    abortControllerRef.current.abort();
-                }
-                setQuery("");
-                setDebouncedQuery("");
-                if (instance.props.favCopy != null) {
-                    instance.props.favorites = instance.props.favCopy;
-                    instance.forceUpdate();
+            placeholder="Search Favorite GIFs"
+            ref={ref}
+            onKeyDown={event => {
+                if (event.key === "Escape") {
+                    event.stopPropagation();
+                    event.preventDefault();
+                    clearSearch();
                 }
             }}
-            query={query}
-            placeholder="Search Favorite Gifs"
         />
     );
 }
